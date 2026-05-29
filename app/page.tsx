@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 
 const VOICES = [
   { id: "nova", label: "Nova", description: "Varm och naturlig (rekommenderas)" },
@@ -13,6 +13,12 @@ const VOICES = [
 
 type VoiceId = (typeof VOICES)[number]["id"];
 
+// Estimate processing time in seconds based on character count.
+// Each OpenAI TTS call takes ~3-5s; chunks run in parallel so total ≈ one call + overhead.
+function estimateDuration(chars: number): number {
+  return Math.max(4, Math.ceil(chars / 2000) * 1.5 + 3);
+}
+
 export default function Home() {
   const [apiKey, setApiKey] = useState("");
   const [showKey, setShowKey] = useState(false);
@@ -21,8 +27,16 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // Progress state
+  const [progress, setProgress] = useState(0); // 0–100
+  const [elapsed, setElapsed] = useState(0);   // seconds since start
+  const [estimated, setEstimated] = useState(0); // total estimated seconds
+
   const audioRef = useRef<HTMLAudioElement>(null);
   const prevUrlRef = useRef<string | null>(null);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const startTimeRef = useRef<number>(0);
 
   useEffect(() => {
     const saved = localStorage.getItem("openai_api_key");
@@ -31,6 +45,29 @@ export default function Home() {
       if (prevUrlRef.current) URL.revokeObjectURL(prevUrlRef.current);
     };
   }, []);
+
+  const stopTimer = useCallback(() => {
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+  }, []);
+
+  const startTimer = useCallback((estimatedSecs: number) => {
+    stopTimer();
+    startTimeRef.current = Date.now();
+    setEstimated(estimatedSecs);
+    setElapsed(0);
+    setProgress(0);
+
+    intervalRef.current = setInterval(() => {
+      const elapsedSecs = (Date.now() - startTimeRef.current) / 1000;
+      setElapsed(elapsedSecs);
+      // Cap at 95% — the final 5% completes when the request finishes
+      const pct = Math.min(95, (elapsedSecs / estimatedSecs) * 100);
+      setProgress(pct);
+    }, 100);
+  }, [stopTimer]);
 
   async function handleGenerate() {
     if (!apiKey.trim()) {
@@ -45,12 +82,14 @@ export default function Home() {
     setLoading(true);
     setError(null);
 
-    // Revoke previous blob URL to free memory
     if (prevUrlRef.current) {
       URL.revokeObjectURL(prevUrlRef.current);
       prevUrlRef.current = null;
     }
     setAudioUrl(null);
+
+    const est = estimateDuration(text.trim().length);
+    startTimer(est);
 
     try {
       const res = await fetch("/api/tts", {
@@ -65,12 +104,17 @@ export default function Home() {
       }
 
       const blob = await res.blob();
+      stopTimer();
+      setProgress(100);
+      setElapsed((Date.now() - startTimeRef.current) / 1000);
+
       const url = URL.createObjectURL(blob);
       prevUrlRef.current = url;
       setAudioUrl(url);
-      // Auto-play after a tick to let the audio element mount
       setTimeout(() => audioRef.current?.play(), 50);
     } catch (e: unknown) {
+      stopTimer();
+      setProgress(0);
       setError(e instanceof Error ? e.message : "Något gick fel.");
     } finally {
       setLoading(false);
@@ -79,6 +123,8 @@ export default function Home() {
 
   const charCount = text.length;
   const charWarning = charCount > 80_000;
+  const secsLeft = Math.max(0, Math.ceil(estimated - elapsed));
+  const done = progress === 100;
 
   return (
     <main className="min-h-screen bg-gradient-to-br from-slate-50 to-blue-50 flex flex-col items-center py-12 px-4">
@@ -176,24 +222,9 @@ export default function Home() {
           >
             {loading ? (
               <span className="flex items-center justify-center gap-2">
-                <svg
-                  className="animate-spin h-4 w-4"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                >
-                  <circle
-                    className="opacity-25"
-                    cx="12"
-                    cy="12"
-                    r="10"
-                    stroke="currentColor"
-                    strokeWidth="4"
-                  />
-                  <path
-                    className="opacity-75"
-                    fill="currentColor"
-                    d="M4 12a8 8 0 018-8v8H4z"
-                  />
+                <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
                 </svg>
                 Genererar ljud…
               </span>
@@ -201,6 +232,32 @@ export default function Home() {
               "Generera ljud"
             )}
           </button>
+
+          {/* Progress bar */}
+          {(loading || done) && (
+            <div className="space-y-1.5">
+              <div className="flex justify-between text-xs text-slate-500">
+                <span>
+                  {done
+                    ? `Klar! (${elapsed.toFixed(1)} s)`
+                    : `Bearbetar… ${elapsed.toFixed(1)} s`}
+                </span>
+                {!done && (
+                  <span>
+                    {secsLeft > 0 ? `~${secsLeft} s kvar` : "snart klar…"}
+                  </span>
+                )}
+              </div>
+              <div className="w-full bg-slate-100 rounded-full h-2 overflow-hidden">
+                <div
+                  className={`h-2 rounded-full transition-all duration-100 ${
+                    done ? "bg-green-500" : "bg-blue-500"
+                  }`}
+                  style={{ width: `${progress}%` }}
+                />
+              </div>
+            </div>
+          )}
 
           {/* Error */}
           {error && (
@@ -213,29 +270,14 @@ export default function Home() {
           {audioUrl && (
             <div className="rounded-xl bg-slate-50 border border-slate-200 p-4 space-y-3">
               <p className="text-sm font-medium text-slate-700">Lyssna</p>
-              <audio
-                ref={audioRef}
-                src={audioUrl}
-                controls
-                className="w-full"
-              />
+              <audio ref={audioRef} src={audioUrl} controls className="w-full" />
               <a
                 href={audioUrl}
                 download="ljudbok.mp3"
                 className="inline-flex items-center gap-1.5 text-sm text-blue-600 hover:text-blue-800 font-medium"
               >
-                <svg
-                  className="h-4 w-4"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                  strokeWidth={2}
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 15V3"
-                  />
+                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 15V3" />
                 </svg>
                 Ladda ner MP3
               </a>
