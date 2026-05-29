@@ -14,6 +14,8 @@ const VOICES = [
 type VoiceId = (typeof VOICES)[number]["id"];
 
 export default function Home() {
+  const [apiKey, setApiKey] = useState("");
+  const [showKey, setShowKey] = useState(false);
   const [text, setText] = useState("");
   const [voice, setVoice] = useState<VoiceId>("nova");
   const [loading, setLoading] = useState(false);
@@ -23,16 +25,23 @@ export default function Home() {
   const prevUrlRef = useRef<string | null>(null);
 
   useEffect(() => {
+    const saved = localStorage.getItem("openai_api_key");
+    if (saved) setApiKey(saved);
     return () => {
       if (prevUrlRef.current) URL.revokeObjectURL(prevUrlRef.current);
     };
   }, []);
 
   async function handleGenerate() {
+    if (!apiKey.trim()) {
+      setError("Ange din OpenAI API-nyckel först.");
+      return;
+    }
     if (!text.trim()) {
       setError("Klistra in eller skriv en text först.");
       return;
     }
+    localStorage.setItem("openai_api_key", apiKey.trim());
     setLoading(true);
     setError(null);
 
@@ -47,7 +56,7 @@ export default function Home() {
       const res = await fetch("/api/tts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text, voice }),
+        body: JSON.stringify({ text, voice, apiKey: apiKey.trim() }),
       });
 
       if (!res.ok) {
@@ -86,6 +95,32 @@ export default function Home() {
 
         {/* Card */}
         <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 space-y-5">
+          {/* API key */}
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1.5">
+              OpenAI API-nyckel
+            </label>
+            <div className="relative">
+              <input
+                type={showKey ? "text" : "password"}
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                placeholder="sk-..."
+                className="w-full rounded-xl border border-slate-200 bg-slate-50 p-3.5 pr-12 text-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent transition font-mono"
+              />
+              <button
+                type="button"
+                onClick={() => setShowKey((s) => !s)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-xs"
+              >
+                {showKey ? "Dölj" : "Visa"}
+              </button>
+            </div>
+            <p className="text-xs text-slate-400 mt-1">
+              Sparas lokalt i din webbläsare — skickas aldrig vidare.
+            </p>
+          </div>
+
           {/* Textarea */}
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1.5">

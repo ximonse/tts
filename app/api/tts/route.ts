@@ -36,19 +36,19 @@ function splitIntoChunks(text: string): string[] {
 }
 
 export async function POST(req: NextRequest) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    return NextResponse.json(
-      { error: "OPENAI_API_KEY saknas på servern." },
-      { status: 500 }
-    );
-  }
-
-  let body: { text?: string; voice?: string };
+  let body: { text?: string; voice?: string; apiKey?: string };
   try {
     body = await req.json();
   } catch {
     return NextResponse.json({ error: "Ogiltig JSON." }, { status: 400 });
+  }
+
+  const apiKey = body.apiKey?.trim() || process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    return NextResponse.json(
+      { error: "Ingen API-nyckel angiven." },
+      { status: 400 }
+    );
   }
 
   const text = body.text?.trim();
